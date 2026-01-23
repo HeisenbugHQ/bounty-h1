@@ -1,0 +1,16 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# exports / results locali
+exports/
+results/
+data/
+
+# editor / os
+.vscode/
+.DS_Store
+Thumbs.db
