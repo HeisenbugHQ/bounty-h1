@@ -1,0 +1,228 @@
+Qui sotto hai prompt pronti da incollare a Codex (uno per volta, nell’ordine). Sono scritti per far fare a Codex modifiche complete e coerenti (SQL + workers + workflow + docs minime) e con guardrail per non ricadere negli stessi problemi.
+
+Prompt 1 — Migrazione SQL: IP pipeline (queue + latest + view)
+“Crea una nuova migrazione SQL idempotente (es. migrations/2026_01_27_ip_pipeline.sql) e aggiorna init_db.sql includendo le stesse definizioni (senza rompere compatibilità). Aggiungi:
+
+VIEW v_ip_seeds:
+
+prende da assets dove status='active' e asset_type IN ('ip','cidr','asn')
+
+colonne: platform, program_external_id, asset_type, value, tags, note, status, first_seen_at, last_seen_at
+
+TABLE ip_discovery_queue:
+
+colonne: id bigserial pk, platform text default 'manual', program_external_id text not null, seed_type text not null ('ip'|'cidr'|'asn'), seed_value text not null, status text default 'new', tries int default 0, last_error text, first_seen_at now(), last_seen_at now()
+
+unique(platform, program_external_id, seed_type, seed_value)
+
+index su status e (platform, program_external_id)
+
+TABLE ip_assets_latest:
+
+colonne: id bigserial pk, platform text default 'manual', program_external_id text not null, ip inet not null, source text not null ('seed_ip'|'cidr'|'asn'|'rdns'), asn int, asn_org text, rdns text, first_seen_at now(), last_seen_at now()
+
+unique(platform, program_external_id, ip)
+
+index su (platform, program_external_id) e asn
+
+(Opzionale ma utile) VIEW v_targets_from_ip o niente (lascia vuoto se non serve).
+
+Tutto deve essere CREATE IF NOT EXISTS / CREATE OR REPLACE, e le tabelle devono convivere col DB attuale.”
+
+Prompt 2 — Worker: enqueue da assets → ip_discovery_queue
+“Crea workers/worker_ip_enqueue.py (idempotente) che:
+
+legge DB_DSN da .env
+
+prende filtro per programma da env come gli altri worker:
+
+usa PROGRAM_HANDLE (o IP_PROGRAM_HANDLE se preferisci) per risalire a program_external_id via tabella programs (platform='hackerone')
+
+se non è presente un handle, esci con log chiaro
+
+query: seleziona da v_ip_seeds per quel program_external_id e platform coerente (hackerone se programma H1, altrimenti manual)
+
+per ogni riga:
+
+seed_type = asset_type (ip/cidr/asn)
+
+seed_value = value (trim)
+
+inserisci in ip_discovery_queue con ON CONFLICT UPDATE last_seen_at=now(), status=CASE WHEN status='error' THEN 'new' ELSE status END
+
+stampa stats: queued_new, touched_existing, total_seeds
+
+non fa rete”
+
+Prompt 3 — Worker: ip_discovery MVP con ASN→prefixes + CIDR expand + RDNS
+“Crea workers/worker_ip_discovery.py con questa logica:
+
+Input:
+
+legge DB_DSN
+
+filtra per programma via PROGRAM_HANDLE (risolve program_external_id come altri worker)
+
+processa batch (env IP_BATCH default 50) da ip_discovery_queue dove status='new' e program_external_id match
+
+usa transazione per marcare processing/done/error
+
+Per ogni queue item:
+A) seed_type='ip'
+
+valida inet (Postgres cast o ipaddress in python)
+
+upsert su ip_assets_latest (platform='hackerone' se programma H1, program_external_id, ip, source='seed_ip', last_seen_at=now())
+
+RDNS opzionale: dig +short -x <ip> (timeout 3-5s) → se hostname valido, salva rdns (solo primo, strip finale '.')
+
+se rdns valido, crea anche target host in targets:
+
+platform='hackerone', program_external_id, host=rdns, source_scope_identifier='ip_discovery'
+
+ON CONFLICT update last_seen_at=now()
+
+B) seed_type='cidr'
+
+parse con ipaddress.ip_network(strict=False)
+
+guardrail: env IP_CIDR_MAX_HOSTS default 4096
+
+se num_addresses > max, marca item status='error' con last_error='cidr_too_large:<n>' e non espandere
+
+espandi host IP (escludi network/broadcast se IPv4) e upsert ognuno in ip_assets_latest con source='cidr'
+
+opzionale: RDNS solo per un sottoinsieme (es. env IP_RDNS_SAMPLE default 200) per non esplodere tempi; se 0 salta.
+
+se RDNS produce hostname valido, upsert in targets come sopra.
+
+C) seed_type='asn'
+
+accetta valori tipo 'AS13335' o '13335' (case-insensitive)
+
+normalizza int asn
+
+risolvi ASN→prefixes via HTTP (MVP) con caching:
+
+usa endpoint pubblico affidabile (scelta tua tra RIPE Stat o BGPView), ma implementa:
+
+timeout 15s
+
+retry 2 con backoff
+
+cache su disco in runtime/cache/asn_<asn>.json con TTL (env ASN_CACHE_TTL_HOURS default 24)
+
+estrai lista prefixes CIDR (IPv4+IPv6 se presenti)
+
+per ogni prefix:
+
+inserisci/aggiorna in ip_discovery_queue come seed_type='cidr', seed_value='<prefix>', status='new'
+
+NON espandere subito i CIDR nello stesso giro (evita runaway); lascia che la coda faccia il resto
+
+opzionale: salva anche una riga placeholder su ip_assets_latest? No, non serve. Basta queue.
+
+Status handling:
+
+Se tutto ok: status='done', last_seen_at=now()
+
+Se errore: incrementa tries, status='error' se tries>=3 altrimenti torna 'new' con last_error
+
+Log per item: seed, outcome, counts (ips_added, rdns_found, targets_added, cidrs_enqueued)
+
+Sicurezza:
+
+valida input, niente shell injection (subprocess list)
+
+dig deve essere chiamato con argomenti separati
+
+se dig non esiste, logga e continua senza RDNS”
+
+Prompt 4 — Workflow: integra ip_enqueue/ip_discovery come step iniziali + gating
+“Modifica workflow.py per integrare i nuovi step, mantenendo lo stile attuale:
+
+aggiungi in build_env_filters() anche:
+
+IP_PROGRAM_HANDLE (se preferisci usare un env dedicato nei worker) altrimenti usa PROGRAM_HANDLE e basta
+
+in ordered_steps() inserisci PRIMA di subdomains_resolve:
+
+ip_enqueue: python workers/worker_ip_enqueue.py (lock=False)
+
+ip_discovery: python workers/worker_ip_discovery.py (lock=False)
+
+gating: questi due step devono girare sempre (return True), o al massimo con toggle RUN_IP=true (default true). Implementa toggle se vuoi.
+
+aggiorna log toggles includendo ip
+
+non introdurre nuove dipendenze”
+
+Prompt 5 — Worker subdomains_resolve: roots “puliti” + union scopes+assets + anti-play.google.com
+“Modifica workers/worker_subdomains_resolve.py (senza cambiare il resto della pipeline) per garantire che i root ‘sporchi’ non entrino mai:
+
+Roots devono provenire SOLO da:
+A) v_scope_domains.host_base (scopes) per program_external_id
+B) v_dns_seeds.host (assets url/domain/wildcard estratti) per program_external_id
+
+Unisci (UNION DISTINCT), poi filtra:
+
+accetta solo domini validi con regex (no spazi, no underscore, almeno un punto, TLD alfabetico minimo 2)
+
+escludi domini che sono chiaramente third-party generici: play.google.com, testflight.apple.com, apps.apple.com, apple.com, google.com, github.com, raw.githubusercontent.com, freshdesk.com, freshworks.com ecc (metti una denylist configurabile via env ROOT_DENYLIST comma-separated + una lista default hardcoded)
+
+se un root non termina col registrable domain del programma? (non affidabile) → non farlo ora
+
+Log:
+
+roots_total_scopes, roots_total_assets, roots_after_filter
+
+stampa i primi 10 roots scartati con motivazione
+
+Non cambiare la parte puredns/resolvers già funzionante”
+
+Prompt 6 — Metabase/SQL: query “endpoint interessanti” (niente psql dentro)
+“Crea un file queries/metabase_endpoints.sql con query pronte per Metabase (solo SQL, niente psql). Devono essere parametriche con {{program_external_id}} o {{program_handle}} (scegli uno e usa subquery).
+
+Includi:
+
+Top endpoints da JS (url_observations source='js') per programma
+
+Parametri più frequenti e più ‘diffusi’ (distinct targets) per programma
+
+Nuovi targets ultime 24h per programma
+
+SAN candidates high confidence (>=80) non promossi
+
+Ogni query deve essere commentata e compatibile Postgres.”
+
+Prompt 7 — Bootstrap: fix wordlists vuote + fail-fast
+“Modifica scripts/bootstrap_kali.sh per evitare ‘file esiste ma vuoto’:
+
+download_if_missing deve:
+
+scaricare anche se il file esiste ma è vuoto o < 100 bytes
+
+scaricare in tmp e poi mv atomico
+
+verificare che il contenuto non sia un HTML 404 (controlla se contiene '<html' o '404' nelle prime 2KB) e in quel caso fallire con messaggio chiaro
+
+Dopo i download, aggiungi check:
+
+wordlists/subdomains_small.txt deve avere > 1000 righe, altrimenti FAIL (exit 1)
+
+stesso per paths/files con soglie più basse (es. > 100)
+
+Mantieni i symlink stabili
+
+Non cambiare il resto”
+
+Prompt 8 — Docs breve: “Ingest qualsiasi dato iniziale” + continuous monitoring
+“Aggiorna README.md (o crea docs/ingest.md) con:
+
+come inserire assets (ip/cidr/asn/url/wildcard/domain)
+
+cosa finisce in DNS pipeline vs IP pipeline
+
+come far girare continuous monitoring (cron / task scheduler) in modo semplice
+
+esempi: inserire AS13335 e poi workflow su bitmex”

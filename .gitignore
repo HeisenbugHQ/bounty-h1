@@ -1,16 +1,56 @@
-.env
-.env.*
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime (volatile, non versionare)
+runtime/logs/
+runtime/workflow_state/
+runtime/bundles/
 *.log
 
-# exports / results locali
-exports/
-results/
-data/
+# Wordlists (decidi tu se versionare i custom: io li tratto come runtime)
+wordlists/seclists/
+wordlists/custom/*.txt
 
-# editor / os
-.vscode/
+# OS / editor
 .DS_Store
-Thumbs.db
+.vscode/
+!.vscode/extensions.json
+
+# Docker
+*.pid
+*.sock
+
+# Subfinder config / provider keys
+subfinder*.yaml
+subfinder*.yml
+config/subfinder*.yaml
+config/subfinder*.yml
+provider-config.yaml
+providers.yaml
+
+# Resolvers (se decidi di rigenerarli automaticamente)
+resolvers_valid.txt
+resolvers_best.txt
+
+# Temporary files
+tmp/
+.temp/
+*.tmp
+
+# Tool configs (real files only)
+config/tools/subfinder-provider-config.yaml
+config/tools/amass-config.ini
+!config/tools/*.example

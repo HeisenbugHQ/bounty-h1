@@ -1,0 +1,172 @@
+BLOCCO 0 – Control Plane
+
+- gestione job, stati, priorità
+
+- rate limiting per programma / provider
+
+- scheduling (quando, cosa, dove)
+
+- health & cost control
+
+BLOCCO 1 – Recon (asset discovery & enrichment)
+
+- Scope ingestion
+- Asset discovery
+subdomains
+SAN
+IPs
+
+-Asset validation
+DNS resolve
+HTTP probe
+Port scan
+
+- Asset enrichment
+HTTP metadata
+TLS
+ASN/CDN/WAF
+JS / URLs / params
+
+BLOCCO 2 – Signal extraction (pre-vuln)
+
+status code “interessanti” (401/403/404 su provider noti)
+CNAME verso provider takeover-prone
+paametri “sensibili” (id, user, token, redirect)
+endpoint pattern (admin, internal, debug)
+JS con keywords (auth, token, secret)
+differenze di risposta (baseline vs altered)
+
+Output: signals, non vuln
+score / confidence simili a burp 
+
+
+🧱 BLOCCO 3 – Auto-check vulnerabilità (molto mirato)
+
+ogni check nasce da un signal preciso
+
+signal: “CNAME → azurewebsites + 404”
+→ check takeover Azure
+
+signal: “param id su endpoint /api/users”
+→ check IDOR read-only
+
+signal: “open redirect param”
+→ check redirect exploitability
+
+Tecnologia:
+checks piccoli, specifici
+no nuclei massivo (o solo su subset)
+output deterministico
+
+Output: findings_auto
+stato: confirmed | probable | negative
+
+🧱 BLOCCO 4 – Triaging (macchina + umano)
+
+triage_decisions
+
+triage_history
+
+🧱 BLOCCO 5 – Notification & Feedback loop
+
+Notifiche solo quando ha senso.
+
+“Nuovo CERTAIN su Uber (takeover)”
+“Nuovi 3 high-signal IDOR su PayPal”
+
+Canali:
+Telegram
+Discord
+Email
+Webhook
+
+Ma soprattutto:
+feedback delle decisioni torna indietro nel sistema
+(per migliorare scoring e filtri)
+
+🧱 BLOCCO 6 – Manual check assistito
+
+Qui l’umano lavora con strumenti, non a memoria.
+
+Il sistema deve fornire:
+
+asset
+signal
+ipotesi
+payload suggeriti
+baseline
+
+Obiettivo:
+ridurre il tempo umano per vuln a minuti, non ore
+
+🧱 BLOCCO 7 – Report & Profit
+
+Questo è quasi banale se tutto prima è fatto bene.
+
+Output:
+template report
+evidenze già raccolte
+timeline
+link diretti a asset
+
+3️⃣ Mole enorme di dati → architettura VPS h24
+
+✅ SÌ:
+
+più VPS piccoli
+job distribuiti
+priorità per programma
+finestre temporali
+Architettura pratica (realistica)
+1 VPS “controller”
+DB
+orchestrator
+N VPS “workers”
+recon only
+auto-check only
+
+Ogni worker:
+chiede job + esegue + riporta risultati
+
+muore senza rompere nulla
+
+Tecnologie:
+
+SSH + Python (inizio)
+
+poi: queue (Redis / Rabbit) se serve
+
+
+In parallelo (strutturale, non un worker):
+7) tabella assets + add_asset.py per input manuale e multi-source
+
+Quando sei pronto, il prossimo step logico è un worker di “expansion” da assets a targets/url_observations:
+
+asset_type=wildcard/domain → subfinder+brute → targets
+
+asset_type=url → url_observations + estrai host → targets
+
+asset_type=cidr/ip → port sweep → nmap (su VPS)
+-----------------------------------------------
+3) Piccolo tuning (prima proposta, concreta)
+
+Per non sballare i tempi:
+
+dir_fuzz:
+
+DIRFUZZ_BATCH=5
+
+DIRFUZZ_RATE=120
+
+DIRFUZZ_TIMEOUT=10
+
+DIRFUZZ_MAX_URLS_PER_HOST=150
+
+DIRFUZZ_MAX_LEARN_PER_HOST=50
+
+bruteforce:
+
+BRUTE_MAX_PER_ROOT=20000 (inizio)
+
+BRUTE_RATE=0 (ok) oppure BRUTE_RATE=2000 se vuoi controllare
+
