@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_ip_enqueue.py
+workers/ip/ip_enqueue.py
 
 Enqueue IP discovery seeds into ip_discovery_queue from v_ip_seeds.
 """

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_ip_discovery.py
+workers/ip/ip_discovery.py
 
 Process ip_discovery_queue entries for a program.
 """

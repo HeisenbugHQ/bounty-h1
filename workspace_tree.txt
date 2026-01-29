@@ -1,0 +1,247 @@
+.
+├── bundles
+│   └── bounty-h1_2026-01-25_14-43-43.zip
+├── config
+│   ├── global.yaml.example
+│   ├── programs
+│   │   ├── bitmex.yaml.example
+│   │   └── shopify.yaml.example
+│   └── tools
+│       ├── amass-config.ini.example
+│       └── subfinder-provider-config.yaml.example
+├── docker-compose.yml
+├── docs
+│   ├── ingest.md
+│   ├── ingest_platforms.md
+│   ├── metabase_queries.md
+│   ├── queries_metabase.md
+│   ├── subfinder_config.md
+│   └── surface_detector_v1.md
+├── .env
+├── .env.example
+├── .github
+├── .gitignore
+├── IDEAS
+├── lib
+│   └── sync_common.py
+├── logs
+│   ├── run_2026-01-24_11-17-44.log
+│   ├── run_2026-01-24_11-43-28.log
+│   ├── run_2026-01-24_12-42-01.log
+│   ├── run_2026-01-24_12-42-42.log
+│   ├── run_2026-01-24_12-44-56.log
+│   ├── run_2026-01-24_13-00-02.log
+│   ├── run_2026-01-24_13-03-12.log
+│   ├── run_2026-01-24_13-04-57.log
+│   ├── run_2026-01-24_13-05-23.log
+│   ├── run_2026-01-24_13-05-27.log
+│   ├── run_2026-01-24_13-06-23.log
+│   ├── run_2026-01-24_13-11-06.log
+│   ├── run_2026-01-24_13-11-09.log
+│   ├── run_2026-01-24_13-11-17.log
+│   ├── run_2026-01-24_13-11-19.log
+│   ├── run_2026-01-24_13-18-48.log
+│   ├── run_2026-01-24_13-18-52.log
+│   ├── run_2026-01-24_13-18-59.log
+│   ├── run_2026-01-24_13-19-04.log
+│   ├── run_2026-01-24_13-19-11.log
+│   ├── run_2026-01-24_13-20-36.log
+│   ├── run_2026-01-24_13-22-29.log
+│   ├── run_2026-01-24_13-22-38.log
+│   ├── run_2026-01-24_13-22-42.log
+│   ├── run_2026-01-24_13-22-43.log
+│   ├── run_2026-01-24_13-26-37.log
+│   ├── run_2026-01-24_13-33-30.log
+│   ├── run_2026-01-24_13-33-31.log
+│   ├── run_2026-01-24_13-37-41.log
+│   ├── run_2026-01-24_13-39-00.log
+│   ├── run_2026-01-24_13-39-17.log
+│   ├── run_2026-01-24_15-28-14.log
+│   ├── run_2026-01-24_15-28-58.log
+│   ├── run_2026-01-24_15-29-02.log
+│   ├── run_2026-01-24_16-02-27.log
+│   ├── run_2026-01-24_16-17-23.log
+│   ├── run_2026-01-24_16-20-32.log
+│   ├── run_2026-01-24_16-24-37.log
+│   ├── run_2026-01-24_16-27-12.log
+│   ├── run_2026-01-24_16-41-50.log
+│   ├── run_2026-01-24_16-41-53.log
+│   ├── run_2026-01-24_16-45-43.log
+│   ├── run_2026-01-24_17-38-10.log
+│   ├── run_2026-01-25_14-35-21.log
+│   ├── run_2026-01-25_14-37-46.log
+│   ├── run_2026-01-25_14-40-24.log
+│   ├── run_2026-01-25_14-45-07.log
+│   ├── run_2026-01-25_17-37-38.log
+│   ├── run_2026-01-25_17-41-09.log
+│   ├── run_2026-01-25_17-41-32.log
+│   ├── run_2026-01-25_17-44-10.log
+│   ├── run_2026-01-25_18-37-42.log
+│   ├── run_2026-01-25_18-38-12.log
+│   ├── run_2026-01-25_18-38-26.log
+│   ├── run_2026-01-25_18-46-09.log
+│   ├── run_2026-01-25_18-52-29.log
+│   ├── run_2026-01-25_19-42-06.log
+│   ├── run_2026-01-25_19-45-27.log
+│   ├── run_2026-01-25_19-48-39.log
+│   ├── run_2026-01-25_19-51-13.log
+│   ├── run_2026-01-25_19-52-00.log
+│   ├── run_2026-01-25_20-00-10.log
+│   ├── run_2026-01-25_20-02-37.log
+│   ├── run_2026-01-25_20-08-41.log
+│   ├── run_2026-01-25_20-09-12.log
+│   ├── run_2026-01-25_20-15-30.log
+│   ├── run_2026-01-25_20-20-22.log
+│   ├── run_2026-01-25_20-21-34.log
+│   ├── run_2026-01-25_20-21-48.log
+│   ├── run_2026-01-25_20-35-39.log
+│   ├── run_2026-01-25_23-44-58.log
+│   ├── run_2026-01-26_10-31-49.log
+│   ├── run_2026-01-26_10-48-54.log
+│   ├── run_2026-01-26_10-51-56.log
+│   ├── run_2026-01-26_10-53-13.log
+│   ├── run_2026-01-26_11-30-27.log
+│   ├── run_2026-01-26_12-02-43.log
+│   └── run_2026-01-26_12-43-14.log
+├── migrations
+│   ├── 2026_01_27_ip_pipeline.sql
+│   ├── 2026_01_27_surface_detector.sql
+│   ├── 2026_01_28_canonical_programs.sql
+│   ├── 2026_01_28_http_headers.sql
+│   ├── 2026_01_28_job_queue.sql
+│   ├── 2026_01_28_multi_platform_views.sql
+│   ├── 2026_01_28_surface_findings.sql
+│   ├── 2026_01_28_surface_signals.sql
+│   ├── 2026_01_28_targets_priority_view.sql
+│   └── 2026_01_28_task_queue.sql
+├── queries
+│   ├── metabase_endpoints.sql
+│   ├── metabase_headers.sql
+│   └── metabase_surface.sql
+├── README.md
+├── requirements.txt
+├── resolvers.txt
+├── runtime
+│   ├── bundles
+│   ├── logs
+│   ├── tmp
+│   │   ├── subs_resolved_24323_academy.bitmex.com.txt
+│   │   ├── subs_resolved_24323_affiliates.bitmex.com.txt
+│   │   ├── subs_resolved_24323_bitmex.com.txt
+│   │   ├── subs_resolved_24323_bitmex.freshdesk.com.txt
+│   │   ├── subs_resolved_24323_bitmex-org.freshworks.com.txt
+│   │   ├── subs_resolved_24323_blog.bitmex.com.txt
+│   │   ├── subs_resolved_24323_com.bitmex.app.android.txt
+│   │   ├── subs_resolved_24323_play.google.com.txt
+│   │   ├── subs_resolved_24323_public.bitmex.com.txt
+│   │   ├── subs_resolved_24323_public-testnet.bitmex.com.txt
+│   │   ├── subs_resolved_24323_research.bitmex.com.txt
+│   │   ├── subs_resolved_24323_status.bitmex.com.txt
+│   │   ├── subs_resolved_24323_support.bitmex.com.txt
+│   │   ├── subs_resolved_24323_testflight.apple.com.txt
+│   │   ├── subs_resolved_24323_testnet.bitmex.com.txt
+│   │   ├── subs_resolved_24323_www.bitmex.com.txt
+│   │   ├── subs_seed_24323_academy.bitmex.com.txt
+│   │   ├── subs_seed_24323_affiliates.bitmex.com.txt
+│   │   ├── subs_seed_24323_bitmex.com.txt
+│   │   ├── subs_seed_24323_bitmex.freshdesk.com.txt
+│   │   ├── subs_seed_24323_bitmex-org.freshworks.com.txt
+│   │   ├── subs_seed_24323_blog.bitmex.com.txt
+│   │   ├── subs_seed_24323_com.bitmex.app.android.txt
+│   │   ├── subs_seed_24323_play.google.com.txt
+│   │   ├── subs_seed_24323_public.bitmex.com.txt
+│   │   ├── subs_seed_24323_public-testnet.bitmex.com.txt
+│   │   ├── subs_seed_24323_research.bitmex.com.txt
+│   │   ├── subs_seed_24323_status.bitmex.com.txt
+│   │   ├── subs_seed_24323_support.bitmex.com.txt
+│   │   ├── subs_seed_24323_testflight.apple.com.txt
+│   │   ├── subs_seed_24323_testnet.bitmex.com.txt
+│   │   ├── subs_seed_24323_www.bitmex.com.txt
+│   │   └── subs_seed_347_account.adobe.com.txt
+│   └── workflow_state
+│       ├── adobe.json
+│       └── learn.lock
+├── scripts
+│   ├── add_asset.py
+│   ├── bootstrap_kali.sh
+│   ├── build_resolvers.sh
+│   ├── db_keep_one_program.sh
+│   ├── db_keep_programs.sh
+│   ├── db_reset.sh
+│   ├── docker_reset_all.sh
+│   ├── make_project_bundle.sh
+│   ├── push_github.sh
+│   ├── restructure_repo.sh
+│   ├── run_logged.sh
+│   ├── setup_subfinder_config.py
+│   ├── sync_bugcrowd.py
+│   ├── sync_intigriti.py
+│   ├── sync_yeswehack.py
+│   ├── workflow_five_programs.sh
+│   └── workflow_one_program_full.sh
+├── sql
+│   ├── init_db.sql
+│   └── ui_views.sql
+├── sync_h1.py
+├── TODO
+├── .vscode
+│   └── settings.json
+├── wordlists
+│   ├── custom
+│   │   ├── endpoints_custom.txt
+│   │   ├── infra_hints_custom.txt
+│   │   ├── js_endpoints_custom.txt
+│   │   ├── params_custom.txt
+│   │   ├── paths_custom.txt
+│   │   └── subdomains_custom.txt
+│   ├── files_small.txt -> small/raft-small-files.txt
+│   ├── paths_small.txt -> small/raft-small-directories.txt
+│   ├── resolvers_seed.txt
+│   ├── resolvers.txt
+│   ├── resolvers_valid.txt
+│   ├── seclists
+│   ├── small
+│   │   ├── raft-small-directories.txt
+│   │   ├── raft-small-files.txt
+│   │   └── subdomains-top1million-5000.txt
+│   ├── subdomains_small.txt -> small/subdomains-top1million-5000.txt
+│   └── wordlists
+│       ├── custom
+│       │   ├── paths_custom.txt
+│       │   └── subdomains_custom.txt
+│       ├── files_small.txt -> small/raft-small-files.txt
+│       ├── paths_small.txt -> small/raft-small-directories.txt
+│       ├── resolvers_valid.txt
+│       ├── small
+│       │   ├── raft-small-directories.txt
+│       │   ├── raft-small-files.txt
+│       │   └── subdomains-top1million-5000.txt
+│       └── subdomains_small.txt -> small/subdomains-top1million-5000.txt
+├── workers
+│   ├── worker_crawl_light.py
+│   ├── worker_ct_crtsh.py
+│   ├── worker_dir_fuzz.py
+│   ├── worker_edge_fingerprint.py
+│   ├── worker_enrich_dns_asn.py
+│   ├── worker_http_reinject.py
+│   ├── worker_ip_discovery.py
+│   ├── worker_ip_enqueue.py
+│   ├── worker_ip_seed_queue.py
+│   ├── worker_learn_from_san.py
+│   ├── worker_nmap_services.py
+│   ├── worker_param_mine_html.py
+│   ├── worker_param_mine_js.py
+│   ├── worker_port_reinject.py
+│   ├── worker_san_correlate.py
+│   ├── worker_scheduler.py
+│   ├── worker_subdomains_bruteforce.py
+│   ├── worker_subdomains_resolve.py
+│   ├── worker_surface_detector.py
+│   ├── worker_surface_detector_v1.py
+│   ├── worker_tls_miner.py
+│   └── worker_wayback_urls.py
+├── workflow.py
+├── .workflow_state
+└── workspace_tree.txt
+
+28 directories, 217 files

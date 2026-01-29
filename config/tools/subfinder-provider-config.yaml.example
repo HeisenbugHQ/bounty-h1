@@ -1,0 +1,14 @@
+providers:
+  - name: securitytrails
+    apikey: "CHANGE_ME_SECURITYTRAILS_API_KEY"
+  - name: shodan
+    apikey: "CHANGE_ME_SHODAN_API_KEY"
+  - name: censys
+    uid: "CHANGE_ME_CENSYS_UID"
+    secret: "CHANGE_ME_CENSYS_SECRET"
+  - name: github
+    apikey: "CHANGE_ME_GITHUB_TOKEN"
+  - name: virustotal
+    apikey: "CHANGE_ME_VT_API_KEY"
+  - name: passive
+    apikey: "CHANGE_ME_PASSIVE_KEY"

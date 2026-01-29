@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_learn_from_san.py
+workers/dns/learn_from_san.py
 
 Learn subdomain labels from TLS SAN domains -> subdomains_custom.txt
 (no DB changes, only file learning)

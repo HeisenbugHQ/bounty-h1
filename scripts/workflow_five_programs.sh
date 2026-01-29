@@ -18,17 +18,17 @@ bash scripts/db_keep_programs.sh "${HANDLES[@]}"
 for h in "${HANDLES[@]}"; do
   echo "[+] ===== PROGRAM: $h ====="
   # keep script already filtered DB; workers will only see these programs in DB anyway
-  python workers/worker_subdomains_resolve.py
-  python workers/worker_http_reinject.py
-  python workers/worker_port_reinject.py
+  python workers/dns/subdomains_resolve.py
+  python workers/meta/http_reinject.py
+  python workers/infra/port_reinject.py
 done
 
 echo "[+] Optional stages (global): nmap/tls/san/params/enrich"
-python workers/worker_nmap_services.py || true
-python workers/worker_tls_miner.py || true
-python workers/worker_san_correlate.py || true
-python workers/worker_param_mine_html.py || true
-python workers/worker_param_mine_js.py || true
-python workers/worker_enrich_dns_asn.py || true
+python workers/infra/nmap_services.py || true
+python workers/tls/tls_miner.py || true
+python workers/tls/san_correlate.py || true
+python workers/web/param_mine_html.py || true
+python workers/web/param_mine_js.py || true
+python workers/infra/enrich_dns_asn.py || true
 
 echo "[+] DONE."

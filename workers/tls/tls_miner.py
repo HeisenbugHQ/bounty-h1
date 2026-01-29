@@ -34,6 +34,7 @@ PROGRAM_HANDLE = (os.getenv("PROGRAM_HANDLE") or "").strip()  # injected by work
 
 TLS_PORTS = [443, 8443]
 TIMEOUT_SEC = int(os.getenv("TLS_TIMEOUT_SEC", "10"))
+TLS_BATCH = int(os.getenv("TLS_BATCH", "0"))
 
 # Extract SANs from x509 -text output
 SAN_BLOCK_RE = re.compile(r"X509v3 Subject Alternative Name:\s*\n\s*(.*)", re.IGNORECASE)
@@ -60,26 +61,49 @@ def resolve_program_external_id(conn, handle: str) -> Optional[str]:
         return str(r[0]) if r else None
 
 
-def fetch_targets(conn, program_external_id: Optional[str]) -> List[Tuple[int, str]]:
+def fetch_targets(conn, program_external_id: Optional[str], limit: int = 0) -> List[Tuple[int, str]]:
     with conn.cursor() as cur:
         if program_external_id:
-            cur.execute(
-                """
-                SELECT id, host
-                FROM targets
-                WHERE platform='hackerone' AND program_external_id=%s
-                ORDER BY last_seen_at DESC
-                """,
-                (program_external_id,),
-            )
+            if limit and limit > 0:
+                cur.execute(
+                    """
+                    SELECT id, host
+                    FROM targets
+                    WHERE platform='hackerone' AND program_external_id=%s
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (program_external_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, host
+                    FROM targets
+                    WHERE platform='hackerone' AND program_external_id=%s
+                    ORDER BY last_seen_at DESC
+                    """,
+                    (program_external_id,),
+                )
         else:
-            cur.execute(
-                """
-                SELECT id, host
-                FROM targets
-                ORDER BY last_seen_at DESC
-                """
-            )
+            if limit and limit > 0:
+                cur.execute(
+                    """
+                    SELECT id, host
+                    FROM targets
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, host
+                    FROM targets
+                    ORDER BY last_seen_at DESC
+                    """
+                )
         return cur.fetchall()
 
 
@@ -222,8 +246,8 @@ def main():
         if PROGRAM_HANDLE and not prog_ext:
             log(f"[WARN] PROGRAM_HANDLE={PROGRAM_HANDLE} not found in programs; scanning all targets")
 
-        targets = fetch_targets(conn, prog_ext)
-        log(f"[INFO] tls_miner targets={len(targets)} program={PROGRAM_HANDLE or '-'}")
+        targets = fetch_targets(conn, prog_ext, TLS_BATCH)
+        log(f"[INFO] tls_miner targets={len(targets)} program={PROGRAM_HANDLE or '-'} batch={TLS_BATCH or 'all'}")
 
         done = 0
         with conn.cursor() as cur:

@@ -1,0 +1,10 @@
+env:
+  SUBFINDER_RECURSIVE: false
+  AMASS_PASSIVE: true
+  HTTP_HEADERS_MODE: capture
+  WILDCARD_TESTS: true
+
+job_budget:
+  http_reinject: 3000
+  port_reinject: 2000
+  wayback_urls: 400

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_enrich_dns_asn.py
+workers/infra/enrich_dns_asn.py
 
 DNS + ASN enrichment:
 - resolve A/AAAA/CNAME for targets.host

@@ -1,0 +1,10 @@
+env:
+  SUBFINDER_RECURSIVE: true
+  HTTP_HEADERS_MODE: capture
+  RESOLVERS_FILE: wordlists/resolvers_valid.txt
+  TRUSTED_RESOLVERS_FILE: wordlists/resolvers_trusted.txt
+
+job_budget:
+  http_reinject: 5000
+  crawl_light: 500
+  dir_fuzz: 100

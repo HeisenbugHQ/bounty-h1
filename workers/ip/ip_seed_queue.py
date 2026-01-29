@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_ip_seed_queue.py
+workers/ip/ip_seed_queue.py
 
 Populate ip_seed_queue from v_ip_seeds for a program.
 """

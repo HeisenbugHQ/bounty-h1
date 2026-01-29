@@ -1,0 +1,26 @@
+[config]
+; Minimal but realistic config.ini for amass
+
+[datasources]
+; enabled data sources (add/remove as needed)
+securitytrails = true
+shodan = true
+censys = true
+github = true
+virustotal = true
+
+[securitytrails]
+apikey = CHANGE_ME_SECURITYTRAILS_API_KEY
+
+[shodan]
+apikey = CHANGE_ME_SHODAN_API_KEY
+
+[censys]
+apikey = CHANGE_ME_CENSYS_API_KEY
+secret = CHANGE_ME_CENSYS_SECRET
+
+[github]
+apikey = CHANGE_ME_GITHUB_TOKEN
+
+[virustotal]
+apikey = CHANGE_ME_VT_API_KEY

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_crawl_light.py
+workers/web/crawl_light.py
 
 Light crawler for attack surface expansion:
 - seeds from v_latest_http_by_target (final_url/url)
@@ -115,7 +115,14 @@ def fetch_seed_targets(cur):
             OR h.content_type ILIKE '%%text/html%%'
             OR h.content_type IS NULL
           )
-        ORDER BY h.observed_at DESC
+        ORDER BY
+          CASE
+            WHEN h.status_code BETWEEN 200 AND 399
+             AND (h.content_type ILIKE 'text/html%%' OR h.content_type ILIKE '%%text/html%%')
+            THEN 0
+            ELSE 1
+          END,
+          h.observed_at DESC
         LIMIT %s
         """,
         (BATCH,),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_san_correlate.py
+workers/tls/san_correlate.py
 
 Extract SAN domains from tls_certs_latest and stage them into san_candidates.
 

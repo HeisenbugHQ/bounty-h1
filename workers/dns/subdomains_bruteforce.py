@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_subdomains_bruteforce.py
+workers/dns/subdomains_bruteforce.py
 
 Bruteforce subdomains ONLY for wildcard assets:
 - input: assets where asset_type='wildcard' and status='active'

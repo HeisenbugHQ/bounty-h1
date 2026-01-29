@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_wayback_urls.py
+workers/dns/wayback_urls.py
 
 Wayback URLs ingestion + LEARNING:
 - paths tokens -> wordlists/custom/paths_custom.txt

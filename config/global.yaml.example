@@ -1,0 +1,12 @@
+env:
+  SUBFINDER_RECURSIVE: false
+  AMASS_PASSIVE: true
+  HTTP_HEADERS_MODE: capture
+  RESOLVERS_FILE: wordlists/resolvers_valid.txt
+  TRUSTED_RESOLVERS_FILE: wordlists/resolvers_trusted.txt
+  WILDCARD_TESTS: true
+
+job_budget:
+  http_reinject: 2500
+  port_reinject: 1500
+  crawl_light: 300

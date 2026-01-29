@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_edge_fingerprint.py
+workers/infra/edge_fingerprint.py
 
 Edge/CDN/WAF hints from latest HTTP observations + LEARNING infra hints.
 

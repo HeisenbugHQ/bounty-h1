@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_port_reinject.py
+workers/infra/port_reinject.py
 
 Robust port scan reinject:
 - fetch targets where port_scanned_at is NULL

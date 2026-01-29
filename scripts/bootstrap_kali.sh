@@ -19,6 +19,11 @@ sudo apt install -y \
   libpcap-dev \
   postgresql-client
 
+echo "[+] apt: install amass if available..."
+if ! sudo apt install -y amass; then
+  echo "  [WARN] amass not available via apt (ok). Install manually if needed."
+fi
+
 echo "[+] Ensure Go is installed..."
 if ! command -v go >/dev/null 2>&1; then
   sudo apt install -y golang-go
@@ -66,6 +71,9 @@ source .venv/bin/activate
 python -m pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
 
+echo "[+] Subfinder: generate provider config from .env (if keys present)..."
+python scripts/setup_subfinder_config.py || true
+
 WORDLIST_DIR="${REPO_ROOT}/wordlists"
 SMALL_DIR="${WORDLIST_DIR}/small"
 CUSTOM_DIR="${WORDLIST_DIR}/custom"
@@ -80,6 +88,27 @@ file_bytes() {
   else
     echo "0"
   fi
+}
+
+# Only download if missing or empty. Empty is treated as missing.
+download_if_missing() {
+  local url="$1"
+  local out="$2"
+  local min_bytes="${3:-256}"
+
+  local sz
+  sz="$(file_bytes "$out")"
+
+  if [ -f "$out" ] && [ "$sz" -gt 0 ]; then
+    echo "  [OK] exists: $out (bytes=$sz)"
+    return 0
+  fi
+
+  if [ -f "$out" ] && [ "$sz" -le 0 ]; then
+    echo "  [WARN] empty file detected, re-downloading: $out"
+  fi
+
+  download_strict "$url" "$out" "$min_bytes"
 }
 
 # min_bytes: if existing file is smaller than this, re-download
@@ -135,6 +164,10 @@ ensure_symlink() {
   local link="$2"
 
   # create link (relative is fine) and validate target exists and non-empty
+  if [[ "$target" != small/* ]]; then
+    echo "  [FATAL] symlink target must be under wordlists/small: $target"
+    exit 2
+  fi
   ln -sf "$target" "$link"
 
   if [ ! -e "$link" ]; then
@@ -164,20 +197,97 @@ ensure_seed_file() {
   fi
 }
 
+ensure_tool_configs() {
+  local tools_dir="${REPO_ROOT}/config/tools"
+  local subfinder_example="${tools_dir}/subfinder-provider-config.yaml.example"
+  local subfinder_real="${tools_dir}/subfinder-provider-config.yaml"
+  local amass_example="${tools_dir}/amass-config.ini.example"
+  local amass_real="${tools_dir}/amass-config.ini"
+
+  mkdir -p "$tools_dir"
+
+  if [ ! -f "$subfinder_real" ] && [ -f "$subfinder_example" ]; then
+    cp -n "$subfinder_example" "$subfinder_real"
+    echo "  [WARN] subfinder config missing; copied example. Compila le chiavi in $subfinder_real"
+  fi
+  if [ ! -f "$amass_real" ] && [ -f "$amass_example" ]; then
+    cp -n "$amass_example" "$amass_real"
+    echo "  [WARN] amass config missing; copied example. Compila le chiavi in $amass_real"
+  fi
+
+  mkdir -p "$HOME/.config/subfinder" "$HOME/.config/amass"
+
+  if [ -f "$subfinder_real" ]; then
+    ln -sf "$subfinder_real" "$HOME/.config/subfinder/provider-config.yaml" 2>/dev/null || cp -f "$subfinder_real" "$HOME/.config/subfinder/provider-config.yaml"
+  fi
+  if [ -f "$amass_real" ]; then
+    ln -sf "$amass_real" "$HOME/.config/amass/config.ini" 2>/dev/null || cp -f "$amass_real" "$HOME/.config/amass/config.ini"
+  fi
+
+  if [ -s "$HOME/.config/subfinder/provider-config.yaml" ]; then
+    echo "    subfinder provider-config: OK ($HOME/.config/subfinder/provider-config.yaml)"
+  else
+    echo "    subfinder provider-config: WARN (missing/empty). Edit ${subfinder_real}"
+  fi
+
+  if [ -s "$HOME/.config/amass/config.ini" ]; then
+    echo "    amass config: OK ($HOME/.config/amass/config.ini)"
+  else
+    echo "    amass config: WARN (missing/empty). Edit ${amass_real}"
+  fi
+}
+
 echo "[+] Wordlists: downloading ONLY selected SMALL lists (SecLists raw)..."
 
+# Avoid legacy duplicate folder wordlists/wordlists
+if [ -d "${WORDLIST_DIR}/wordlists" ]; then
+  echo "  [WARN] legacy directory found: ${WORDLIST_DIR}/wordlists"
+  echo "  [WARN] attempting safe cleanup if it is a duplicate of ${WORDLIST_DIR}"
+
+  legacy_dir="${WORDLIST_DIR}/wordlists"
+  is_dup=true
+
+  while IFS= read -r -d '' entry; do
+    rel="${entry#${legacy_dir}/}"
+    counterpart="${WORDLIST_DIR}/${rel}"
+    if [ ! -e "$counterpart" ]; then
+      is_dup=false
+      break
+    fi
+    if [ -d "$entry" ]; then
+      if ! diff -qr "$entry" "$counterpart" >/dev/null 2>&1; then
+        is_dup=false
+        break
+      fi
+    else
+      if ! cmp -s "$entry" "$counterpart"; then
+        is_dup=false
+        break
+      fi
+    fi
+  done < <(find "$legacy_dir" -mindepth 1 -print0)
+
+  # ensure no extra entries exist in wordlists root
+  if $is_dup; then
+    echo "  [WARN] duplicate content confirmed; removing ${legacy_dir}"
+    rm -rf "$legacy_dir"
+  else
+    echo "  [WARN] ${legacy_dir} is not an exact duplicate; leaving in place"
+  fi
+fi
+
 # These thresholds are intentionally low but >0 to avoid "empty file" success.
-download_strict \
+download_if_missing \
   "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
   "${SMALL_DIR}/subdomains-top1million-5000.txt" \
   20000
 
-download_strict \
+download_if_missing \
   "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-directories.txt" \
   "${SMALL_DIR}/raft-small-directories.txt" \
   2000
 
-download_strict \
+download_if_missing \
   "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-files.txt" \
   "${SMALL_DIR}/raft-small-files.txt" \
   2000
@@ -224,6 +334,12 @@ if [ ! -s "${WORDLIST_DIR}/resolvers_valid.txt" ]; then
 fi
 
 echo "[+] Sanity checks:"
+ensure_tool_configs
+if [ -s "$HOME/.config/subfinder/provider-config.yaml" ]; then
+  echo "    subfinder provider config: present"
+else
+  echo "    subfinder provider config: absent"
+fi
 echo "    massdns:   $(command -v massdns || echo MISSING)"
 echo "    subfinder: $(command -v subfinder || echo MISSING)"
 echo "    httpx:     $(command -v httpx || echo MISSING)"

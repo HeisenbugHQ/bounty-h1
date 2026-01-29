@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_http_reinject.py
+workers/meta/http_reinject.py
 
 HTTP probing with rich ingestion (httpx -> http_observations).
 
@@ -22,7 +22,7 @@ Env (.env) optional:
 import os
 import json
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Tuple
 
 import psycopg
 from dotenv import load_dotenv
@@ -39,19 +39,27 @@ HTTPX_PORTS = os.getenv("HTTPX_PORTS", "80,443,8080,8443,8000,8888")
 HTTPX_TIMEOUT = os.getenv("HTTPX_TIMEOUT", "10")
 HTTPX_THREADS = os.getenv("HTTPX_THREADS", "50")
 
-HEADER_ALLOWLIST = {
+# Whitelisted headers only (lowercase)
+HEADER_WHITELIST = {
     "content-security-policy",
     "access-control-allow-origin",
     "access-control-allow-credentials",
+    "access-control-allow-methods",
+    "access-control-allow-headers",
+    "access-control-expose-headers",
     "set-cookie",
     "location",
-    "server",
     "via",
-    "x-cache",
+    "x-forwarded-for",
+    "x-real-ip",
+    "strict-transport-security",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "permissions-policy",
     "cf-ray",
     "cf-cache-status",
-    "x-amz-cf-id",
-    "x-iinfo",
+    "server-timing",
 }
 
 
@@ -107,52 +115,128 @@ def run_httpx(hosts):
     return p
 
 
-def pick_headers(obj: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    httpx may emit headers under keys like:
-      - "header" (string)
-      - "headers" (map)
-      - "response_headers" (map)
-    We'll try multiple, keep allowlist only.
-    Also for set-cookie we store only cookie names.
-    """
+def extract_headers(obj: Dict[str, Any]) -> Dict[str, List[str]]:
     headers = None
     for k in ("headers", "response_headers"):
         if isinstance(obj.get(k), dict):
             headers = obj.get(k)
             break
-
-    # Some versions provide a raw header string. We won't parse it here.
     if headers is None:
         return {}
 
-    out = {}
+    out: Dict[str, List[str]] = {}
     for k, v in headers.items():
         lk = str(k).lower()
-        if lk not in HEADER_ALLOWLIST:
+        if lk not in HEADER_WHITELIST:
             continue
-
-        # Normalize set-cookie: keep cookie names only (avoid values)
-        if lk == "set-cookie":
-            names = []
-            if isinstance(v, list):
-                items = v
-            else:
-                items = [v]
-            for item in items:
-                try:
-                    part = str(item).split(";", 1)[0]
-                    cname = part.split("=", 1)[0].strip()
-                    if cname:
-                        names.append(cname)
-                except Exception:
-                    continue
-            out["set-cookie-names"] = sorted(set(names))
+        if isinstance(v, list):
+            vals = [str(x) for x in v if x is not None]
+        else:
+            vals = [str(v)] if v is not None else []
+        if not vals:
             continue
-
-        out[lk] = v
-
+        out.setdefault(lk, []).extend(vals)
     return out
+
+
+def normalize_header_values(values: List[str]) -> Any:
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def parse_set_cookie(values: List[str]) -> Dict[str, Any]:
+    count = 0
+    flags_set = set()
+    domains = set()
+    paths = set()
+
+    for item in values:
+        try:
+            count += 1
+            parts = [p.strip() for p in str(item).split(";") if p.strip()]
+            for flag in parts[1:]:
+                f = flag.strip()
+                fl = f.lower()
+                if fl == "secure":
+                    flags_set.add("Secure")
+                elif fl == "httponly":
+                    flags_set.add("HttpOnly")
+                elif fl.startswith("samesite"):
+                    val = f.split("=", 1)[1].strip() if "=" in f else ""
+                    if val:
+                        flags_set.add(f"SameSite={val}")
+                elif fl.startswith("domain="):
+                    dom = f.split("=", 1)[1].strip()
+                    if dom:
+                        domains.add(dom)
+                elif fl.startswith("path="):
+                    pth = f.split("=", 1)[1].strip()
+                    if pth:
+                        paths.add(pth)
+        except Exception:
+            continue
+
+    return {
+        "count": count,
+        "flags": sorted(flags_set),
+        "domains": sorted(domains),
+        "paths": sorted(paths),
+    }
+
+
+def build_headers_selected(obj: Dict[str, Any]) -> Dict[str, Any]:
+    headers = extract_headers(obj)
+    selected: Dict[str, Any] = {}
+
+    for k, v in headers.items():
+        if k == "set-cookie":
+            selected["set-cookie"] = parse_set_cookie(v)
+        else:
+            selected[k] = normalize_header_values(v)
+
+    return selected
+
+
+def build_tech_hints(headers_selected: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Example:
+    tech_json->hints = {
+      "cdn": null,
+      "waf": null,
+      "proxy": null,
+      "signals": ["cloudflare", "varnish", "cdn-cache"]
+    }
+    """
+    signals = set()
+    cdn = None
+    waf = None
+    proxy = None
+
+    def sget(key: str) -> str:
+        v = headers_selected.get(key)
+        if isinstance(v, list):
+            return " ".join([str(x) for x in v if x is not None]).lower()
+        return str(v).lower() if v is not None else ""
+
+    if "cf-ray" in headers_selected or "cf-cache-status" in headers_selected:
+        signals.add("cloudflare")
+    if "cloudflare" in sget("server"):
+        signals.add("cloudflare")
+    if "varnish" in sget("via"):
+        signals.add("varnish")
+        proxy = proxy or "varnish"
+    if "cdn-cache" in sget("server-timing") or "cache" in sget("server-timing"):
+        signals.add("cdn-cache")
+
+    return {
+        "cdn": cdn,
+        "waf": waf,
+        "proxy": proxy,
+        "signals": sorted(signals),
+    }
 
 
 def main():
@@ -171,6 +255,8 @@ def main():
         p = run_httpx(hosts)
 
         inserted = 0
+        header_key_counts: Dict[str, int] = {}
+
         with conn.cursor() as cur:
             for line in p.stdout:
                 line = line.strip()
@@ -183,7 +269,6 @@ def main():
 
                 host = (o.get("host") or o.get("input") or "").strip().lower()
                 if host not in host_to_id:
-                    # Some httpx versions output full URL in input; try best effort
                     inp = (o.get("input") or "").strip().lower()
                     if inp in host_to_id:
                         host = inp
@@ -204,16 +289,22 @@ def main():
                 tech = o.get("tech") or o.get("technologies") or {}
                 content_type = o.get("content_type") or o.get("content-type")
                 content_length = o.get("content_length") or o.get("content-length")
-                location = o.get("location")
 
                 ip = o.get("ip")
                 cname = o.get("cname")
                 cdn = o.get("cdn")
                 favicon = o.get("favicon") or o.get("favicon_mmh3") or o.get("favicon-hash")
 
-                headers_selected = pick_headers(o)
+                headers_selected = build_headers_selected(o) or {}
+                hints = build_tech_hints(headers_selected)
+                if isinstance(tech, dict):
+                    tech = dict(tech)
+                    tech["hints"] = hints
+                else:
+                    tech = {"hints": hints}
+                for k in headers_selected.keys():
+                    header_key_counts[k] = header_key_counts.get(k, 0) + 1
 
-                # redirect chain: httpx doesn't always provide it; keep location trail if present
                 redirect_chain = None
                 if isinstance(o.get("chain"), list):
                     redirect_chain = o.get("chain")
@@ -238,7 +329,6 @@ def main():
                 )
                 inserted += 1
 
-            # mark processed even if no httpx hit; otherwise you'll loop forever
             cur.execute(
                 """
                 UPDATE targets
@@ -255,6 +345,11 @@ def main():
             err = p.stderr.read().strip()
         if err:
             print("[WARN] httpx stderr (truncated):", err[:300])
+
+        if header_key_counts:
+            keys_sorted = sorted(header_key_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            keys_summary = ", ".join([f"{k}" for k, _ in keys_sorted])
+            print(f"[INFO] headers_selected_keys=[{keys_summary}]")
 
         print(f"[DONE] httpx inserted_rows={inserted} marked_http_scanned={len(rows)}")
 

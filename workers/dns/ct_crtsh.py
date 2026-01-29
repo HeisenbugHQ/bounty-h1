@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_ct_crtsh.py
+workers/dns/ct_crtsh.py
 
 Fetch subdomains from crt.sh for registrable domains derived from v_dns_seeds.
 

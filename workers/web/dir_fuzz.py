@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_dir_fuzz.py
+workers/web/dir_fuzz.py
 
 Directory fuzzing (attack surface expansion) with strict controls + learning loop.
 

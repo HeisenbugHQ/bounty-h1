@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workers/worker_param_mine_js.py
+workers/web/param_mine_js.py
 
 JS surface mining + LEARNING:
 - params -> wordlists/custom/params_custom.txt
@@ -146,7 +146,14 @@ def fetch_queue(conn):
                 JOIN v_latest_http_by_target h ON h.target_id=t.id
                 WHERE t.platform='hackerone'
                   AND t.program_external_id=%s
-                ORDER BY h.observed_at DESC
+                ORDER BY
+                  CASE
+                    WHEN h.status_code BETWEEN 200 AND 399
+                     AND (h.content_type ILIKE 'text/html%%' OR h.content_type ILIKE '%%text/html%%')
+                    THEN 0
+                    ELSE 1
+                  END,
+                  h.observed_at DESC
                 LIMIT %s
                 """,
                 (prog, BATCH),
@@ -158,7 +165,14 @@ def fetch_queue(conn):
                 FROM targets t
                 JOIN v_latest_http_by_target h ON h.target_id=t.id
                 WHERE t.platform='hackerone'
-                ORDER BY h.observed_at DESC
+                ORDER BY
+                  CASE
+                    WHEN h.status_code BETWEEN 200 AND 399
+                     AND (h.content_type ILIKE 'text/html%%' OR h.content_type ILIKE '%%text/html%%')
+                    THEN 0
+                    ELSE 1
+                  END,
+                  h.observed_at DESC
                 LIMIT %s
                 """,
                 (BATCH,),

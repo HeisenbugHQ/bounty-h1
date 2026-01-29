@@ -52,6 +52,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
+from psycopg.types.json import Json
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv(".env")
@@ -74,11 +76,273 @@ RUN_SAN_LEARN = True
 RUN_DIRFUZZ = False
 RUN_IP = True
 RUN_IP_SEEDS = False
+RUN_SURFACE = True
+RUN_ENGINE = False
+TASK_MODE = False
+
+JOB_QUEUE_TAKE = int(os.getenv("JOB_QUEUE_TAKE", "10"))
+JOB_BUDGET_DEFAULT = int(os.getenv("JOB_BUDGET_DEFAULT", "1"))
+SAN_EVENT_LIMIT = int(os.getenv("SAN_EVENT_LIMIT", "200"))
+IP_EVENT_LIMIT = int(os.getenv("IP_EVENT_LIMIT", "200"))
+
+BUDGET_PORT_TARGETS_PER_ROUND = int(os.getenv("BUDGET_PORT_TARGETS_PER_ROUND", "50"))
+BUDGET_TLS_TARGETS_PER_ROUND = int(os.getenv("BUDGET_TLS_TARGETS_PER_ROUND", "50"))
+BUDGET_CRAWL_TARGETS_PER_ROUND = int(os.getenv("BUDGET_CRAWL_TARGETS_PER_ROUND", "20"))
+TASK_TAKE = int(os.getenv("TASK_TAKE", "10"))
 
 LEARN_LOCK_ENABLED = os.getenv("LEARN_LOCK_ENABLED", "true").strip().lower() == "true"
 LEARN_LOCK_FILE = os.getenv("LEARN_LOCK_FILE", "runtime/workflow_state/learn.lock").strip()
 
 STATE_DIR = Path("runtime/workflow_state")
+CONFIG_DIR = Path("config")
+
+
+def load_yaml_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log(f"[WARN] failed to load config {path}: {exc}")
+        return {}
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def normalize_env_key(key: str) -> str:
+    return key.strip().upper().replace("-", "_").replace(" ", "_")
+
+
+def coerce_env_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def config_to_env(config: dict, base_env: dict) -> dict:
+    env_out: dict[str, str] = {}
+    if not isinstance(config, dict):
+        return env_out
+
+    merged_env: dict = {}
+    env_block = config.get("env")
+    if isinstance(env_block, dict):
+        merged_env.update(env_block)
+
+    for key, value in config.items():
+        if str(key).lower() in ("env", "job_budget", "job_budgets"):
+            continue
+        merged_env[key] = value
+
+    job_budget = config.get("job_budget") or config.get("job_budgets")
+    if isinstance(job_budget, dict):
+        for key, value in job_budget.items():
+            merged_env[f"JOB_BUDGET_{key}"] = value
+
+    for key, value in merged_env.items():
+        env_key = normalize_env_key(str(key))
+        if env_key in base_env:
+            continue  # respect explicit environment overrides
+        env_out[env_key] = coerce_env_value(value)
+
+    return env_out
+
+
+JOB_BUDGET_ALIASES = {
+    "dns": ["JOB_BUDGET_DNS", "JOB_BUDGET_SUBDOMAINS_RESOLVE"],
+    "http": ["JOB_BUDGET_HTTP", "JOB_BUDGET_HTTP_REINJECT"],
+    "tls": ["JOB_BUDGET_TLS", "JOB_BUDGET_TLS_MINER"],
+    "ip": ["JOB_BUDGET_IP", "JOB_BUDGET_IP_DISCOVERY"],
+}
+
+
+def get_job_budget(job_type: str, default: int) -> int:
+    for key in JOB_BUDGET_ALIASES.get(job_type, []):
+        raw = os.getenv(key)
+        if raw is not None:
+            try:
+                return max(0, int(raw))
+            except Exception:
+                continue
+    return max(0, int(default))
+
+
+def enqueue_job(
+    conn,
+    job_type: str,
+    platform: str,
+    program_external_id: str,
+    payload: dict | None = None,
+    priority: int = 0,
+    run_after: str | None = None,
+) -> bool:
+    payload = payload or {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO job_queue(
+              job_type, platform, program_external_id,
+              priority, run_after, status, tries, last_error, payload, first_seen_at, last_seen_at
+            )
+            VALUES (%s,%s,%s,%s,COALESCE(%s::timestamptz, now()),'new',0,NULL,%s,now(),now())
+            ON CONFLICT (job_type, platform, program_external_id, payload)
+            DO UPDATE SET
+              last_seen_at=now(),
+              priority=GREATEST(job_queue.priority, EXCLUDED.priority),
+              run_after=LEAST(job_queue.run_after, EXCLUDED.run_after),
+              status=CASE
+                WHEN job_queue.status='failed' THEN 'new'
+                ELSE job_queue.status
+              END
+            RETURNING (xmax = 0) AS inserted;
+            """,
+            (job_type, platform, program_external_id, int(priority), run_after, Json(payload)),
+        )
+        return bool(cur.fetchone()[0])
+
+
+def fetch_due_jobs(conn, platform: str, program_external_id: str, limit: int):
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, job_type, payload, priority
+                FROM job_queue
+                WHERE status='new'
+                  AND platform=%s
+                  AND program_external_id=%s
+                  AND run_after <= now()
+                ORDER BY priority DESC, run_after ASC, id ASC
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+                """,
+                (platform, program_external_id, limit),
+            )
+            rows = cur.fetchall()
+            if rows:
+                ids = [r[0] for r in rows]
+                cur.execute(
+                    """
+                    UPDATE job_queue
+                    SET status='running', last_seen_at=now()
+                    WHERE id = ANY(%s)
+                    """,
+                    (ids,),
+                )
+            return rows
+
+
+def mark_job_done(conn, job_id: int):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE job_queue
+            SET status='done', last_error=NULL, last_seen_at=now()
+            WHERE id=%s
+            """,
+            (job_id,),
+        )
+
+
+def mark_job_failed(conn, job_id: int, err: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE job_queue
+            SET status='failed', tries=tries+1, last_error=%s, last_seen_at=now()
+            WHERE id=%s
+            """,
+            (err, job_id),
+        )
+
+
+def schedule_periodic_jobs(conn, platform: str, program_external_id: str) -> dict:
+    counts = {"dns": 0, "http": 0, "tls": 0, "ip": 0}
+    budgets = {
+        "dns": get_job_budget("dns", JOB_BUDGET_DEFAULT),
+        "http": get_job_budget("http", JOB_BUDGET_DEFAULT),
+        "tls": get_job_budget("tls", JOB_BUDGET_DEFAULT),
+        "ip": get_job_budget("ip", JOB_BUDGET_DEFAULT),
+    }
+    for job_type, budget in budgets.items():
+        for slot in range(budget):
+            payload = {"kind": "maintenance", "slot": slot}
+            if enqueue_job(conn, job_type, platform, program_external_id, payload=payload, priority=0):
+                counts[job_type] += 1
+    return counts
+
+
+def schedule_event_jobs(conn, platform: str, program_external_id: str) -> dict:
+    counts = {
+        "san_candidates": 0,
+        "ip_assets": 0,
+        "dns_jobs": 0,
+        "http_jobs": 0,
+        "tls_jobs": 0,
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT san_domain
+            FROM san_candidates
+            WHERE platform=%s
+              AND program_external_id=%s
+              AND status='new'
+              AND first_seen_at = last_seen_at
+            ORDER BY first_seen_at DESC
+            LIMIT %s
+            """,
+            (platform, program_external_id, SAN_EVENT_LIMIT),
+        )
+        san_rows = [str(r[0]) for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT ip::TEXT
+            FROM ip_assets_latest
+            WHERE platform=%s
+              AND program_external_id=%s
+              AND first_seen_at = last_seen_at
+            ORDER BY first_seen_at DESC
+            LIMIT %s
+            """,
+            (platform, program_external_id, IP_EVENT_LIMIT),
+        )
+        ip_rows = [str(r[0]) for r in cur.fetchall()]
+
+    counts["san_candidates"] = len(san_rows)
+    counts["ip_assets"] = len(ip_rows)
+
+    for sd in san_rows:
+        payload = {"trigger": "san_correlate", "san_domain": sd}
+        if enqueue_job(conn, "dns", platform, program_external_id, payload=payload, priority=10):
+            counts["dns_jobs"] += 1
+        if enqueue_job(conn, "http", platform, program_external_id, payload=payload, priority=10):
+            counts["http_jobs"] += 1
+
+    for ip in ip_rows:
+        payload = {"trigger": "ip_discovery", "ip": ip}
+        if enqueue_job(conn, "http", platform, program_external_id, payload=payload, priority=10):
+            counts["http_jobs"] += 1
+        if enqueue_job(conn, "tls", platform, program_external_id, payload=payload, priority=10):
+            counts["tls_jobs"] += 1
+
+    return counts
 
 
 def ts() -> str:
@@ -380,32 +644,183 @@ def run_step(step_name: str, cmd: list[str], env_extra: dict, must_exist: str | 
 def ordered_steps():
     # lock=True => may write to shared learning files (wordlists/custom/*)
     return [
-        ("ip_enqueue",            ["python", "workers/worker_ip_enqueue.py"],            "workers/worker_ip_enqueue.py",            False),
-        ("ip_discovery",          ["python", "workers/worker_ip_discovery.py"],          "workers/worker_ip_discovery.py",          False),
-        ("subdomains_resolve",     ["python", "workers/worker_subdomains_resolve.py"],     "workers/worker_subdomains_resolve.py",     True),
-        ("ip_seed_queue",          ["python", "workers/worker_ip_seed_queue.py"],          "workers/worker_ip_seed_queue.py",          False),
-        ("subdomains_bruteforce",  ["python", "workers/worker_subdomains_bruteforce.py"],  "workers/worker_subdomains_bruteforce.py",  True),
+        ("ip_enqueue",            ["python", "workers/ip/ip_enqueue.py"],            "workers/ip/ip_enqueue.py",            False),
+        ("ip_discovery",          ["python", "workers/ip/ip_discovery.py"],          "workers/ip/ip_discovery.py",          False),
+        ("subdomains_resolve",     ["python", "workers/dns/subdomains_resolve.py"],     "workers/dns/subdomains_resolve.py",     True),
+        ("ip_seed_queue",          ["python", "workers/ip/ip_seed_queue.py"],          "workers/ip/ip_seed_queue.py",          False),
+        ("subdomains_bruteforce",  ["python", "workers/dns/subdomains_bruteforce.py"],  "workers/dns/subdomains_bruteforce.py",  True),
 
-        ("ct_crtsh",               ["python", "workers/worker_ct_crtsh.py"],               "workers/worker_ct_crtsh.py",               False),
-        ("http_reinject",          ["python", "workers/worker_http_reinject.py"],          "workers/worker_http_reinject.py",          False),
-        ("crawl_light",            ["python", "workers/worker_crawl_light.py"],            "workers/worker_crawl_light.py",            True),
-        ("wayback_urls",           ["python", "workers/worker_wayback_urls.py"],           "workers/worker_wayback_urls.py",           True),
+        ("ct_crtsh",               ["python", "workers/dns/ct_crtsh.py"],               "workers/dns/ct_crtsh.py",               False),
+        ("http_reinject",          ["python", "workers/meta/http_reinject.py"],          "workers/meta/http_reinject.py",          False),
+        ("crawl_light",            ["python", "workers/web/crawl_light.py"],            "workers/web/crawl_light.py",            True),
+        ("wayback_urls",           ["python", "workers/dns/wayback_urls.py"],           "workers/dns/wayback_urls.py",           True),
 
-        ("edge_fingerprint",       ["python", "workers/worker_edge_fingerprint.py"],       "workers/worker_edge_fingerprint.py",       True),
-        ("enrich_dns_asn",          ["python", "workers/worker_enrich_dns_asn.py"],          "workers/worker_enrich_dns_asn.py",          False),
+        ("edge_fingerprint",       ["python", "workers/infra/edge_fingerprint.py"],       "workers/infra/edge_fingerprint.py",       True),
+        ("enrich_dns_asn",          ["python", "workers/infra/enrich_dns_asn.py"],          "workers/infra/enrich_dns_asn.py",          False),
 
-        ("port_reinject",          ["python", "workers/worker_port_reinject.py"],          "workers/worker_port_reinject.py",          False),
-        ("nmap_services",          ["python", "workers/worker_nmap_services.py"],          "workers/worker_nmap_services.py",          False),
+        ("port_reinject",          ["python", "workers/infra/port_reinject.py"],          "workers/infra/port_reinject.py",          False),
+        ("nmap_services",          ["python", "workers/infra/nmap_services.py"],          "workers/infra/nmap_services.py",          False),
 
-        ("tls_miner",              ["python", "workers/worker_tls_miner.py"],              "workers/worker_tls_miner.py",              False),
-        ("san_correlate",          ["python", "workers/worker_san_correlate.py"],          "workers/worker_san_correlate.py",          False),
-        ("san_learn",              ["python", "workers/worker_learn_from_san.py"],         "workers/worker_learn_from_san.py",         True),
+        ("tls_miner",              ["python", "workers/tls/tls_miner.py"],              "workers/tls/tls_miner.py",              False),
+        ("san_correlate",          ["python", "workers/tls/san_correlate.py"],          "workers/tls/san_correlate.py",          False),
+        ("san_learn",              ["python", "workers/dns/learn_from_san.py"],         "workers/dns/learn_from_san.py",         True),
 
-        ("param_mine_html",        ["python", "workers/worker_param_mine_html.py"],        "workers/worker_param_mine_html.py",        True),
-        ("param_mine_js",          ["python", "workers/worker_param_mine_js.py"],          "workers/worker_param_mine_js.py",          True),
+        ("param_mine_html",        ["python", "workers/web/param_mine_html.py"],        "workers/web/param_mine_html.py",        True),
+        ("param_mine_js",          ["python", "workers/web/param_mine_js.py"],          "workers/web/param_mine_js.py",          True),
+        ("surface_detector_v1",    ["python", "workers/analysis/surface_detector_v1.py"],    "workers/analysis/surface_detector_v1.py",    False),
+        ("surface_detector",       ["python", "workers/analysis/surface_detector.py"],       "workers/analysis/surface_detector.py",       False),
 
-        ("dir_fuzz",               ["python", "workers/worker_dir_fuzz.py"],               "workers/worker_dir_fuzz.py",               True),
+        ("dir_fuzz",               ["python", "workers/web/dir_fuzz.py"],               "workers/web/dir_fuzz.py",               True),
     ]
+
+
+def job_steps(job_type: str):
+    job_type = (job_type or "").strip().lower()
+    if job_type == "dns":
+        return [
+            ("subdomains_resolve", ["python", "workers/dns/subdomains_resolve.py"], "workers/dns/subdomains_resolve.py", True),
+            ("subdomains_bruteforce", ["python", "workers/dns/subdomains_bruteforce.py"], "workers/dns/subdomains_bruteforce.py", True),
+        ]
+    if job_type == "http":
+        return [
+            ("http_reinject", ["python", "workers/meta/http_reinject.py"], "workers/meta/http_reinject.py", False),
+        ]
+    if job_type == "tls":
+        return [
+            ("tls_miner", ["python", "workers/tls/tls_miner.py"], "workers/tls/tls_miner.py", False),
+        ]
+    if job_type == "ip":
+        return [
+            ("ip_enqueue", ["python", "workers/ip/ip_enqueue.py"], "workers/ip/ip_enqueue.py", False),
+            ("ip_discovery", ["python", "workers/ip/ip_discovery.py"], "workers/ip/ip_discovery.py", False),
+            ("ip_seed_queue", ["python", "workers/ip/ip_seed_queue.py"], "workers/ip/ip_seed_queue.py", False),
+        ]
+    return []
+
+
+def task_steps(task_type: str):
+    task_type = (task_type or "").strip().lower()
+    mapping = {
+        "http_reinject": ["python", "workers/meta/http_reinject.py"],
+        "nmap_services": ["python", "workers/infra/nmap_services.py"],
+        "crawl_light": ["python", "workers/web/crawl_light.py"],
+        "san_correlate": ["python", "workers/tls/san_correlate.py"],
+    }
+    cmd = mapping.get(task_type)
+    if not cmd:
+        return None
+    return (f"task:{task_type}", cmd, cmd[1], False)
+
+
+def fetch_due_tasks(conn, platform: str, program_external_id: str, limit: int):
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, task_type, tries
+                FROM task_queue
+                WHERE status='new'
+                  AND platform=%s
+                  AND program_external_id=%s
+                  AND run_after <= now()
+                ORDER BY priority DESC, run_after ASC, id ASC
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+                """,
+                (platform, program_external_id, limit),
+            )
+            rows = cur.fetchall()
+            if rows:
+                ids = [r[0] for r in rows]
+                cur.execute(
+                    """
+                    UPDATE task_queue
+                    SET status='running', last_seen_at=now()
+                    WHERE id = ANY(%s)
+                    """,
+                    (ids,),
+                )
+            return rows
+
+
+def mark_task_done(conn, task_id: int):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE task_queue
+            SET status='done', last_error=NULL, last_seen_at=now()
+            WHERE id=%s
+            """,
+            (task_id,),
+        )
+
+
+def mark_task_failed(conn, task_id: int, tries: int, err: str):
+    next_tries = int(tries) + 1
+    delay_sec = min(3600, 30 * (2 ** max(0, next_tries - 1)))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE task_queue
+            SET status='failed',
+                tries=%s,
+                last_error=%s,
+                run_after=now() + (%s || ' seconds')::interval,
+                last_seen_at=now()
+            WHERE id=%s
+            """,
+            (next_tries, err, int(delay_sec), task_id),
+        )
+
+
+def run_task_engine(handle: str, program_external_id: str, env_filter: dict):
+    platform = "hackerone"
+    run_status = "ok"
+    run_error = None
+    exit_code = 0
+
+    with psycopg.connect(DB_DSN) as conn:
+        config = {
+            "engine": "task",
+            "toggles": {
+                "TASK_MODE": True,
+            },
+        }
+        run_id = start_run(conn, program_external_id, "task", config)
+
+        tasks = fetch_due_tasks(conn, platform, program_external_id, TASK_TAKE)
+        if not tasks:
+            log("[DONE] task queue empty (no due tasks)")
+            set_run_status(conn, run_id, "ok", None)
+            return
+
+        for task_id, task_type, tries in tasks:
+            step = task_steps(task_type)
+            if not step:
+                mark_task_failed(conn, task_id, int(tries), f"unknown_task_type:{task_type}")
+                conn.commit()
+                continue
+
+            step_name, cmd, must_exist, lock = step
+            log(f"[INFO] task start id={task_id} type={task_type}")
+            try:
+                run_step(step_name, cmd, env_filter, must_exist=must_exist, lock=lock, run_conn=conn, run_id=run_id)
+                mark_task_done(conn, task_id)
+                conn.commit()
+            except Exception as e:
+                mark_task_failed(conn, task_id, int(tries), str(e))
+                conn.commit()
+                run_status = "fail"
+                run_error = str(e)
+                exit_code = 10
+                log(f"[FAIL] task id={task_id} type={task_type}: {e}")
+
+        if run_status == "fail":
+            set_run_status(conn, run_id, "fail", run_error)
+        else:
+            set_run_status(conn, run_id, "ok", None)
+
+    sys.exit(exit_code)
 
 
 def should_run(step_name: str, counts: Counts) -> bool:
@@ -431,6 +846,8 @@ def should_run(step_name: str, counts: Counts) -> bool:
         return RUN_SAN_LEARN
     if step_name == "dir_fuzz":
         return RUN_DIRFUZZ
+    if step_name in ("surface_detector", "surface_detector_v1"):
+        return RUN_SURFACE
     if step_name in ("ip_enqueue", "ip_discovery"):
         return RUN_IP
     if step_name == "ip_seed_queue":
@@ -438,9 +855,86 @@ def should_run(step_name: str, counts: Counts) -> bool:
     return True
 
 
+def run_queue_engine(handle: str, program_external_id: str, env_filter: dict):
+    platform = "hackerone"
+    run_status = "ok"
+    run_error = None
+    exit_code = 0
+
+    with psycopg.connect(DB_DSN) as conn:
+        config = {
+            "engine": "queue",
+            "toggles": {
+                "RUN_ENGINE": True,
+                "RUN_SURFACE": RUN_SURFACE,
+            },
+        }
+        run_id = start_run(conn, program_external_id, "queue", config)
+
+        periodic = schedule_periodic_jobs(conn, platform, program_external_id)
+        events = schedule_event_jobs(conn, platform, program_external_id)
+        conn.commit()
+
+        log(
+            "[INFO] queue schedule "
+            f"periodic_dns={periodic['dns']} periodic_http={periodic['http']} "
+            f"periodic_tls={periodic['tls']} periodic_ip={periodic['ip']} "
+            f"san_candidates={events['san_candidates']} ip_assets={events['ip_assets']} "
+            f"dns_jobs={events['dns_jobs']} http_jobs={events['http_jobs']} tls_jobs={events['tls_jobs']}"
+        )
+
+        jobs = fetch_due_jobs(conn, platform, program_external_id, JOB_QUEUE_TAKE)
+        if not jobs:
+            log("[DONE] queue empty (no due jobs)")
+            set_run_status(conn, run_id, "ok", None)
+            return
+
+        for job_id, job_type, payload, _priority in jobs:
+            payload = payload if isinstance(payload, dict) else {}
+            steps = job_steps(job_type)
+            if not steps:
+                mark_job_failed(conn, job_id, f"unknown_job_type:{job_type}")
+                conn.commit()
+                continue
+
+            log(f"[INFO] job start id={job_id} type={job_type} payload={payload}")
+            try:
+                for step_name, cmd, must_exist, lock in steps:
+                    env_extra = dict(env_filter)
+                    env_extra["JOB_TYPE"] = job_type
+                    env_extra["JOB_PAYLOAD"] = json.dumps(payload, sort_keys=True)
+                    run_step(
+                        f"job:{job_type}:{step_name}",
+                        cmd,
+                        env_extra,
+                        must_exist=must_exist,
+                        lock=lock,
+                        run_conn=conn,
+                        run_id=run_id,
+                    )
+                mark_job_done(conn, job_id)
+                conn.commit()
+            except Exception as e:
+                mark_job_failed(conn, job_id, str(e))
+                conn.commit()
+                run_status = "fail"
+                run_error = str(e)
+                exit_code = 10
+                log(f"[FAIL] job id={job_id} type={job_type}: {e}")
+
+        if run_status == "fail":
+            set_run_status(conn, run_id, "fail", run_error)
+        else:
+            set_run_status(conn, run_id, "ok", None)
+
+    sys.exit(exit_code)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    default_engine = "queue" if env_bool("RUN_ENGINE", False) else "linear"
     ap.add_argument("program_handle")
+    ap.add_argument("--engine", choices=["linear", "queue"], default=default_engine)
     ap.add_argument("--mode", choices=["discovery", "monitor"], default="discovery")
     ap.add_argument("--purge", action="store_true")
     ap.add_argument("--resume", action="store_true")
@@ -454,7 +948,14 @@ def main():
         log("[FATAL] missing program handle")
         sys.exit(2)
 
-    global RUN_SUB_BRUTE, RUN_CRAWL_LIGHT, RUN_WAYBACK, RUN_EDGE_FP, RUN_PARAMS, RUN_TLS, RUN_SAN, RUN_SAN_LEARN, RUN_DIRFUZZ, RUN_IP, RUN_IP_SEEDS
+    config_global = load_yaml_config(CONFIG_DIR / "global.yaml")
+    config_program = load_yaml_config(CONFIG_DIR / "programs" / f"{handle}.yaml")
+    merged_config = deep_merge(config_global, config_program)
+    config_env = config_to_env(merged_config, os.environ)
+    if config_env:
+        log(f"[INFO] config env overrides: {', '.join(sorted(config_env.keys()))}")
+
+    global RUN_SUB_BRUTE, RUN_CRAWL_LIGHT, RUN_WAYBACK, RUN_EDGE_FP, RUN_PARAMS, RUN_TLS, RUN_SAN, RUN_SAN_LEARN, RUN_DIRFUZZ, RUN_IP, RUN_IP_SEEDS, RUN_SURFACE, RUN_ENGINE, TASK_MODE
     if args.mode == "monitor":
         RUN_SUB_BRUTE = env_bool("RUN_SUB_BRUTE", False)
         RUN_CRAWL_LIGHT = env_bool("RUN_CRAWL_LIGHT", False)
@@ -472,6 +973,9 @@ def main():
     RUN_DIRFUZZ = env_bool("RUN_DIRFUZZ", False)
     RUN_IP = env_bool("RUN_IP", True)
     RUN_IP_SEEDS = env_bool("RUN_IP_SEEDS", False)
+    RUN_SURFACE = env_bool("RUN_SURFACE", True)
+    RUN_ENGINE = args.engine == "queue"
+    TASK_MODE = env_bool("TASK_MODE", False)
 
     prog_ext = resolve_program_external_id(handle)
     if not prog_ext:
@@ -479,8 +983,20 @@ def main():
         sys.exit(3)
 
     env_filter = build_env_filters(handle)
+    if config_env:
+        env_filter.update(config_env)
     steps = ordered_steps()
     step_names = [s[0] for s in steps]
+
+    if TASK_MODE:
+        log(f"[INFO] task mode enabled (take={TASK_TAKE})")
+        run_task_engine(handle, prog_ext, env_filter)
+        return
+
+    if RUN_ENGINE:
+        log(f"[INFO] queue engine enabled (take={JOB_QUEUE_TAKE})")
+        run_queue_engine(handle, prog_ext, env_filter)
+        return
 
     # Start defaults
     start_round = 1
@@ -520,7 +1036,8 @@ def main():
         log(f"[INFO] resuming from checkpoint: round={start_round} step={step}")
 
     log(f"[INFO] workflow start program={handle} mode={args.mode} max_rounds={args.max_rounds}")
-    log(f"[INFO] toggles sub_brute={RUN_SUB_BRUTE} crawl={RUN_CRAWL_LIGHT} wayback={RUN_WAYBACK} edge_fp={RUN_EDGE_FP} params={RUN_PARAMS} tls={RUN_TLS} san={RUN_SAN} san_learn={RUN_SAN_LEARN} dirfuzz={RUN_DIRFUZZ} ip={RUN_IP} ip_seeds={RUN_IP_SEEDS}")
+    log(f"[INFO] toggles sub_brute={RUN_SUB_BRUTE} crawl={RUN_CRAWL_LIGHT} wayback={RUN_WAYBACK} edge_fp={RUN_EDGE_FP} params={RUN_PARAMS} tls={RUN_TLS} san={RUN_SAN} san_learn={RUN_SAN_LEARN} dirfuzz={RUN_DIRFUZZ} ip={RUN_IP} ip_seeds={RUN_IP_SEEDS} surface={RUN_SURFACE}")
+    log(f"[INFO] budgets port={BUDGET_PORT_TARGETS_PER_ROUND} tls={BUDGET_TLS_TARGETS_PER_ROUND} crawl={BUDGET_CRAWL_TARGETS_PER_ROUND}")
     log(f"[INFO] learn_lock enabled={LEARN_LOCK_ENABLED} file={LEARN_LOCK_FILE}")
 
     initial = get_counts(prog_ext)
@@ -540,6 +1057,7 @@ def main():
             "RUN_DIRFUZZ": RUN_DIRFUZZ,
             "RUN_IP": RUN_IP,
             "RUN_IP_SEEDS": RUN_IP_SEEDS,
+            "RUN_SURFACE": RUN_SURFACE,
         },
     }
 
@@ -576,7 +1094,17 @@ def main():
                 })
 
                 try:
-                    run_step(step_name, cmd, env_filter, must_exist=must_exist, lock=lock, run_conn=run_conn, run_id=run_id)
+                    env_extra = dict(env_filter)
+                    if step_name == "port_reinject":
+                        env_extra["PORT_BATCH"] = str(BUDGET_PORT_TARGETS_PER_ROUND)
+                    if step_name == "nmap_services":
+                        env_extra["NMAP_BATCH"] = str(BUDGET_PORT_TARGETS_PER_ROUND)
+                    if step_name == "tls_miner":
+                        env_extra["TLS_BATCH"] = str(BUDGET_TLS_TARGETS_PER_ROUND)
+                    if step_name == "crawl_light":
+                        env_extra["CRAWL_BATCH"] = str(BUDGET_CRAWL_TARGETS_PER_ROUND)
+
+                    run_step(step_name, cmd, env_extra, must_exist=must_exist, lock=lock, run_conn=run_conn, run_id=run_id)
                 except Exception as e:
                     log(f"[FAIL] {step_name}: {e}")
                     log(f"[INFO] checkpoint saved. Fix worker and rerun: python workflow.py {handle} --purge --resume")
